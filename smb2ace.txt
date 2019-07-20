@@ -1,0 +1,96 @@
+Setup
+--------------
+
+To reach full arbitrary code execution, code needs to be written into RAM that can chain-load more
+code somewhere to make a decent block of code available for execution without any kind of restrictions.
+
+In the case of SMB2 there's no filtering of inputs going on, so U+D and L+R at the same time is fine and
+makes the whole thing much easier. So the next step is to write the following code into RAM somewhere it
+can be executed from a crash further on.
+
+JSR $F661       20 61 F6                ; Jump to games input reading routine, returns buttons in Y
+TYA             98                      ; Transfer Y to A
+PHA             48                      ; Push A to stack
+BNE $F9         D0 F9                   ; As long as any buttons are held keep going
+RTS             60                      ; Return into last values pushed to stack
+
+This code will simply read input from the controller and push it to the stack, and when it reads 0000
+it'll drop out of the loop and return using the last two values written as the location to return to.
+Return address 0101 will be used here to return right into the beginning of the stack where the code
+was written to.
+
+This initial loader will have to be written by manipulating game objects since there is no direct access
+to just modify RAM yet, and these are the so-far easiest to manipulate objects placed in a sequence that
+can be used.
+
+X-positions in RAM
+------------------
+29 = Sprite slot 5
+2A = Sprite slot 4
+2B = Sprite slot 3
+2C = Sprite slot 2
+2D = Sprite slot 1
+2E = Door drop location (can only be dropped in even 0x10 intervals (16 pixels))
+2F = Throw slot 1
+30 = Throw slot 2
+31 = Throw slot 3
+
+RAM Address     29 2A 2B 2C 2D 2E 2F 30
+Required Value  20 61 F6 98 48 D0 F9 60
+
+So by spawning and throwing/killing/despawning the objects above to turn their X-coordinate into the value
+listed in required value, code will slowly be written into RAM location 0029 that contains the loader.
+
+When this setup is completed, the game can be crashed by alternating inputs every poll to make the game
+end up in an infinite loop with NMI's stacking on top of eachother causing stack corruption and eventually
+a crash.
+
+Code execution
+--------------
+
+This first block of code is the crash itself when done at a specific poll, different polls result
+in different amount of stack corruption and will return to different addresses but the one used in the
+TAS is the best one found so far since it ends up executing 0000 (RAM) as code.
+
+0000-000F contains mostly just temporary variables used by different game routines, but the content
+is not overly important as long as it's instructions that don't crash the CPU and moves execution to
+000F which is a byte that can be somewhat reliably controlled. When no enemies are spawned 000F will contain
+the Y-offset of the 16x16 tile that the player is at, so by jumping this can be controlled and in this 
+case it's turned into $B0 which is the BCS instruction to make a relative branch.
+
+0010 will be used as the argument for the jump instruction and this is a global frame timer, so all
+that needs to do here is wait for the correct frame before triggering the crash. So in this case it needs
+to be $18 to do a PC relative jump to $29 where the code stored using enemies and veggies are located.
+
+EC67 $40         RTI                             A:B5 X:E0 Y:00 P:84 SP:E7 CYC:303 SL:1  
+FFF5 $04 $01     NOP* $01                        A:B5 X:E0 Y:00 P:84 SP:EA CYC:321 SL:1  
+FFF7 $04 $01     NOP* $01                        A:B5 X:E0 Y:00 P:84 SP:EA CYC:330 SL:1  
+FFF9 $BE $8E $EB LDX $EB8E,Y @ $EB8E             A:B5 X:E0 Y:00 P:84 SP:EA CYC:339 SL:1  
+FFFC $50 $FF     BVC $FFFD                       A:B5 X:08 Y:00 P:04 SP:EA CYC:10  SL:2  
+FFFD $FF $F0 $FF ISC* $FFF0,X @ $FFF8            A:B5 X:08 Y:00 P:04 SP:EA CYC:19  SL:2  
+0000 $50 $07     BVC $0009                       A:B2 X:08 Y:00 P:85 SP:EA CYC:40  SL:2  
+0009 $09 $41     ORA #$41                        A:B2 X:08 Y:00 P:85 SP:EA CYC:49  SL:2  
+000B $82 $0D     NOP* #$0D                       A:F3 X:08 Y:00 P:85 SP:EA CYC:55  SL:2  
+000D $82 $00     NOP* #$00                       A:F3 X:08 Y:00 P:85 SP:EA CYC:61  SL:2  
+000F $B0 $18     BCS $0029                       A:F3 X:08 Y:00 P:85 SP:EA CYC:67  SL:2  
+
+So after passing through the "trash" data up until 000F and making the jump execution ends up
+at 0029 which is the loader code previously written by enemies/veggies etc.
+
+0029 $20 $61 $F6 JSR $F661                       A:F3 X:08 Y:00 P:85 SP:EA CYC:76  SL:2  
+F661 [read controller input, leave value in Y]
+002C $98         TYA                             A:00 X:FF Y:00 P:85 SP:FA CYC:56  SL:255
+002D $48         PHA                             A:00 X:FF Y:00 P:07 SP:FA CYC:62  SL:255
+002E $D0 $F9     BNE $0029                       A:00 X:FF Y:00 P:07 SP:F9 CYC:71  SL:255
+0030 $60         RTS                             A:00 X:FF Y:00 P:07 SP:F9 CYC:77  SL:255
+
+This code as described above will load data onto the stack and when there's no more data it returns
+to the last two bytes written.
+
+0101 $EA         NOP                             A:00 X:FF Y:00 P:07 SP:FB CYC:95  SL:255
+.... [nop sled continues to 0151]
+0151 $4C $56 $E9 JMP $E956                       A:00 X:FF Y:00 P:07 SP:FB CYC:234 SL:256
+
+The payload at 0101 is finally executed and here it just contains a big NOP-sled into a jump to credits.
+
+And with that SMB2 is broken :)
